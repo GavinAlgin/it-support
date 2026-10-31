@@ -5,3 +5,5 @@ psycopg[binary]
 python-jose[cryptography]
 python-dotenv
 pydantic
+supabase>=2.10,<3.0
+email-validator

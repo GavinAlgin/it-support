@@ -1,3 +1,10 @@
-
 psutil
 requests
+PySide6
+requests
+keyring
+
+# Windows Installer Executable
+#pip install pyinstaller
+# Build the executable
+#pyinstaller --onefile --windowed --name CloudMonitor main.py

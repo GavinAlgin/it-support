@@ -1,1 +1,12 @@
-/.env
+
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+agent/agent.json
+agent/agent.log
+agent/build/
+agent/dist/
+backend/.venv/

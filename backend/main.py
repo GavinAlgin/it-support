@@ -1,403 +1,661 @@
 
-import hashlib
-import hmac
 import os
+import hashlib
 import secrets
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
-from sqlalchemy import (
-    Boolean, DateTime, Float, ForeignKey, Integer, JSON, String,
-    create_engine, desc, select
-)
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from supabase import create_client, Client
+
+
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
 
 load_dotenv()
 
-DATABASE_URL = os.environ["DATABASE_URL"]
-JWT_SECRET = os.environ["JWT_SECRET"]
-ADMIN_USERNAME = os.environ["ADMIN_USERNAME"]
-ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
-JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
-
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=3,
-    max_overflow=2,
-    connect_args={"sslmode": "require"},
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY"
 )
-SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+if not all([
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    SUPABASE_SERVICE_ROLE_KEY
+]):
+    raise RuntimeError("Missing Supabase environment variables")
+
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY
+)
+
+app = FastAPI(
+    title="helpdesk API",
+    version="1.0.0"
+)
 
 
-def now():
+# --------------------------------------------------
+# HELPERS
+# --------------------------------------------------
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+
+def utc_now():
     return datetime.now(timezone.utc)
 
 
-def utc(value):
-    if value is not None and value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
+def get_profile(user_id: str):
+    result = (
+        supabase.table("profiles")
+        .select("*")
+        .eq("id", user_id)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(
+            status_code=403,
+            detail="User profile not found"
+        )
+
+    return result.data[0]
 
 
-def digest(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
+def get_user(
+    authorization: Optional[str] = Header(None)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authentication token"
+        )
+
+    token = authorization.split(" ", 1)[1]
+
+    try:
+        result = supabase.auth.get_user(token)
+
+        if not result.user:
+            raise ValueError("Invalid user")
+
+        return get_profile(str(result.user.id))
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired login token"
+        )
 
 
-class Base(DeclarativeBase):
-    pass
+def require_admin(user=Depends(get_user)):
+    if user["role"] != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator access required"
+        )
+
+    return user
 
 
-class Device(Base):
-    __tablename__ = "devices"
+def get_device(
+    authorization: Optional[str] = Header(None)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing device token"
+        )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    hostname: Mapped[str] = mapped_column(String(255))
-    os_version: Mapped[str] = mapped_column(String(255))
-    cpu_model: Mapped[str] = mapped_column(String(255))
-    cpu_count: Mapped[int] = mapped_column(Integer)
-    total_ram_mb: Mapped[float] = mapped_column(Float)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    token = authorization.split(" ", 1)[1]
 
+    result = (
+        supabase.table("devices")
+        .select("*")
+        .eq("device_token_hash", hash_token(token))
+        .execute()
+    )
 
-class EnrollmentCode(Base):
-    __tablename__ = "enrollment_codes"
+    if not result.data:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid device credentials"
+        )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class Metric(Base):
-    __tablename__ = "metrics"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
-    cpu_percent: Mapped[float] = mapped_column(Float)
-    ram_percent: Mapped[float] = mapped_column(Float)
-    ram_used_mb: Mapped[float] = mapped_column(Float)
-    ram_total_mb: Mapped[float] = mapped_column(Float)
-    disk_percent: Mapped[float] = mapped_column(Float)
-    disk_used_gb: Mapped[float] = mapped_column(Float)
-    disk_total_gb: Mapped[float] = mapped_column(Float)
-    battery_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    battery_plugged: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    cpu_temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
-    uptime_seconds: Mapped[float] = mapped_column(Float)
-    network_sent_bytes: Mapped[int] = mapped_column(Integer)
-    network_recv_bytes: Mapped[int] = mapped_column(Integer)
-    top_processes: Mapped[list] = mapped_column(JSON, default=list)
+    return result.data[0]
 
 
-class Alert(Base):
-    __tablename__ = "alerts"
+# --------------------------------------------------
+# REQUEST MODELS
+# --------------------------------------------------
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(40))
-    message: Mapped[str] = mapped_column(String(500))
-    active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class LoginBody(BaseModel):
+class LoginRequest(BaseModel):
     username: str
     password: str
 
 
-class EnrollBody(BaseModel):
-    code: str = Field(min_length=16, max_length=200)
-    hostname: str = Field(min_length=1, max_length=255)
-    os_version: str = Field(max_length=255)
-    cpu_model: str = Field(max_length=255)
-    cpu_count: int = Field(ge=1, le=1024)
-    total_ram_mb: float = Field(gt=0)
+class EnrollmentRequest(BaseModel):
+    code: str
+    hostname: str
+    os_name: str
+    agent_version: str
 
 
-class ReportBody(BaseModel):
-    cpu_percent: float = Field(ge=0, le=100)
-    ram_percent: float = Field(ge=0, le=100)
-    ram_used_mb: float = Field(ge=0)
-    ram_total_mb: float = Field(gt=0)
-    disk_percent: float = Field(ge=0, le=100)
-    disk_used_gb: float = Field(ge=0)
-    disk_total_gb: float = Field(gt=0)
-    battery_percent: float | None = Field(default=None, ge=0, le=100)
-    battery_plugged: bool | None = None
-    cpu_temp_c: float | None = Field(default=None, ge=-30, le=150)
-    uptime_seconds: float = Field(ge=0)
-    network_sent_bytes: int = Field(ge=0)
-    network_recv_bytes: int = Field(ge=0)
-    top_processes: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+class MetricsRequest(BaseModel):
+    cpu_percent: Optional[float] = Field(None, ge=0, le=100)
+    ram_percent: Optional[float] = Field(None, ge=0, le=100)
+    ram_used_mb: Optional[float] = Field(None, ge=0)
+    disk_percent: Optional[float] = Field(None, ge=0, le=100)
+    disk_used_gb: Optional[float] = Field(None, ge=0)
+    battery_percent: Optional[float] = Field(None, ge=0, le=100)
+    battery_plugged_in: Optional[bool] = None
+    uptime_seconds: Optional[int] = Field(None, ge=0)
+    processes: Optional[list[dict]] = None
 
 
-bearer = HTTPBearer(auto_error=False)
+class PermissionResponse(BaseModel):
+    request_id: str
+    decision: str
 
 
-def get_admin(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
-    if credentials is None:
-        raise HTTPException(status_code=401, detail="Sign in required")
-    try:
-        claims = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=["HS256"])
-        if claims.get("role") != "admin" or claims.get("sub") != ADMIN_USERNAME:
-            raise HTTPException(status_code=403, detail="Administrator required")
-        return claims
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+class EnrollmentCodeRequest(BaseModel):
+    expires_in_hours: int = Field(default=24, ge=1, le=168)
 
 
-def get_device_id(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)):
-    if credentials is None:
-        raise HTTPException(status_code=401, detail="Device token required")
-    token_hash = digest(credentials.credentials)
-    with SessionLocal() as db:
-        device = db.scalar(
-            select(Device).where(
-                Device.token_hash == token_hash,
-                Device.is_active.is_(True),
-            )
-        )
-        if device is None:
-            raise HTTPException(status_code=401, detail="Invalid device token")
-        return device.id
+class PolicyRequest(BaseModel):
+    monitoring_enabled: bool
+    permissions: dict[str, bool]
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    Base.metadata.create_all(engine)
-    yield
+class PermissionRequestCreate(BaseModel):
+    scope: str
+    description: Optional[str] = None
 
 
-app = FastAPI(title="Helpdesk Monitoring API", lifespan=lifespan)
+# --------------------------------------------------
+# HEALTH CHECK
+# --------------------------------------------------
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
-)
+@app.get("/")
+def root():
+    return {
+        "application": "CloudMonitor",
+        "status": "online",
+        "version": "1.0.0"
+    }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    try:
+        supabase.table("profiles").select("id").limit(1).execute()
+
+        return {
+            "status": "healthy",
+            "database": "connected"
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection failed"
+        )
 
 
-@app.post("/auth/login")
-def login(body: LoginBody):
-    if not (
-        hmac.compare_digest(body.username, ADMIN_USERNAME)
-        and hmac.compare_digest(body.password, ADMIN_PASSWORD)
-    ):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+# --------------------------------------------------
+# AUTHENTICATION
+# --------------------------------------------------
 
-    token = jwt.encode(
-        {
-            "sub": ADMIN_USERNAME,
-            "role": "admin",
-            "exp": now() + timedelta(minutes=JWT_EXPIRE_MINUTES),
-        },
-        JWT_SECRET,
-        algorithm="HS256",
+@app.post("/api/v1/auth/login")
+def login(data: LoginRequest):
+
+    try:
+        # CloudMonitor login accepts an email address.
+        result = supabase.auth.sign_in_with_password({
+            "email": data.username,
+            "password": data.password
+        })
+
+        if not result.session:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication failed"
+            )
+
+        profile = get_profile(str(result.user.id))
+
+        return {
+            "access_token": result.session.access_token,
+            "token_type": "bearer",
+            "role": profile["role"]
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+
+
+# --------------------------------------------------
+# ENROLLMENT CODE GENERATION
+# --------------------------------------------------
+
+@app.post("/api/v1/admin/enrollment-codes")
+def create_enrollment_code(
+    data: EnrollmentCodeRequest,
+    admin=Depends(require_admin)
+):
+
+    code = secrets.token_urlsafe(24)
+
+    expires = utc_now() + timedelta(
+        hours=data.expires_in_hours
     )
-    return {"access_token": token, "token_type": "bearer"}
+
+    supabase.table("enrollment_codes").insert({
+        "code_hash": hash_token(code),
+        "created_by": admin["id"],
+        "expires_at": expires.isoformat()
+    }).execute()
+
+    # Show the raw code only once.
+    return {
+        "enrollment_code": code,
+        "expires_at": expires.isoformat()
+    }
 
 
-@app.post("/admin/enrollment-codes")
-def create_code(_=Depends(get_admin)):
-    code = secrets.token_urlsafe(32)
-    with SessionLocal.begin() as db:
-        db.add(
-            EnrollmentCode(
-                code_hash=digest(code),
-                expires_at=now() + timedelta(minutes=15),
-            )
+# --------------------------------------------------
+# DEVICE ENROLLMENT
+# --------------------------------------------------
+
+@app.post("/api/v1/agent/enroll")
+def enroll_device(
+    data: EnrollmentRequest,
+    user=Depends(get_user)
+):
+
+    code_result = (
+        supabase.table("enrollment_codes")
+        .select("*")
+        .eq("code_hash", hash_token(data.code))
+        .is_("used_at", "null")
+        .execute()
+    )
+
+    if not code_result.data:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or already used enrollment code"
         )
-    return {"code": code, "expires_in_minutes": 15}
 
+    enrollment = code_result.data[0]
 
-@app.post("/agent/enroll")
-def enroll(body: EnrollBody):
-    with SessionLocal.begin() as db:
-        entry = db.scalar(
-            select(EnrollmentCode)
-            .where(EnrollmentCode.code_hash == digest(body.code))
-            .with_for_update()
+    expires = datetime.fromisoformat(
+        enrollment["expires_at"].replace("Z", "+00:00")
+    )
+
+    if expires <= utc_now():
+        raise HTTPException(
+            status_code=400,
+            detail="Enrollment code expired"
         )
-        if (
-            entry is None
-            or entry.used_at is not None
-            or utc(entry.expires_at) <= now()
-        ):
-            raise HTTPException(status_code=401, detail="Invalid, expired, or used code")
 
-        device_id = secrets.token_hex(16)
-        device_token = secrets.token_urlsafe(48)
+    device_token = secrets.token_urlsafe(48)
 
-        db.add(Device(
-            id=device_id,
-            hostname=body.hostname,
-            os_version=body.os_version,
-            cpu_model=body.cpu_model,
-            cpu_count=body.cpu_count,
-            total_ram_mb=body.total_ram_mb,
-            token_hash=digest(device_token),
-            last_seen=now(),
-        ))
-        entry.used_at = now()
+    result = supabase.table("devices").insert({
+        "hostname": data.hostname,
+        "os_name": data.os_name,
+        "agent_version": data.agent_version,
+        "device_token_hash": hash_token(device_token),
+        "monitoring_enabled": False,
+        "permissions": {
+            "system_metrics": False,
+            "disk_metrics": False,
+            "battery_metrics": False,
+            "uptime_metrics": False,
+            "process_metadata": False
+        }
+    }).execute()
 
-    # Return the secret only once; store only its hash in the database.
-    return {"device_id": device_id, "device_token": device_token}
+    if not result.data:
+        raise HTTPException(
+            status_code=500,
+            detail="Device registration failed"
+        )
+
+    device = result.data[0]
+
+    # Mark the enrollment code as used.
+    supabase.table("enrollment_codes").update({
+        "used_at": utc_now().isoformat()
+    }).eq("id", enrollment["id"]).is_(
+        "used_at", "null"
+    ).execute()
+
+    return {
+        "device_id": device["id"],
+        "device_token": device_token
+    }
 
 
-@app.post("/agent/report")
-def report(body: ReportBody, device_id: str = Depends(get_device_id)):
-    with SessionLocal.begin() as db:
-        device = db.get(Device, device_id)
-        if device is None or not device.is_active:
-            raise HTTPException(status_code=401, detail="Device disabled")
+# --------------------------------------------------
+# DEVICE POLICY
+# --------------------------------------------------
 
-        device.last_seen = now()
-        db.add(Metric(device_id=device_id, **body.model_dump()))
+@app.get("/api/v1/agent/policy")
+def get_policy(device=Depends(get_device)):
 
-        checks = [
-            ("cpu", body.cpu_percent >= 90, f"CPU usage: {body.cpu_percent:.1f}%"),
-            ("ram", body.ram_percent >= 90, f"RAM usage: {body.ram_percent:.1f}%"),
-            ("disk", body.disk_percent >= 90, f"Disk usage: {body.disk_percent:.1f}%"),
+    return {
+        "monitoring_enabled": device["monitoring_enabled"],
+        "permissions": device["permissions"]
+    }
+
+
+@app.put("/api/v1/admin/devices/{device_id}/policy")
+def update_policy(
+    device_id: str,
+    data: PolicyRequest,
+    admin=Depends(require_admin)
+):
+
+    result = supabase.table("devices").update({
+        "monitoring_enabled": data.monitoring_enabled,
+        "permissions": data.permissions
+    }).eq("id", device_id).execute()
+
+    if not result.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found"
+        )
+
+    return {"message": "Device policy updated"}
+
+
+# --------------------------------------------------
+# METRICS COLLECTION
+# --------------------------------------------------
+
+@app.post("/api/v1/agent/heartbeat")
+def heartbeat(
+    data: MetricsRequest,
+    device=Depends(get_device)
+):
+
+    if not device["monitoring_enabled"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Monitoring is disabled"
+        )
+
+    metrics = data.model_dump(exclude_none=True)
+    permissions = device["permissions"]
+
+    allowed = {
+        "system_metrics": [
+            "cpu_percent",
+            "ram_percent",
+            "ram_used_mb"
+        ],
+        "disk_metrics": [
+            "disk_percent",
+            "disk_used_gb"
+        ],
+        "battery_metrics": [
+            "battery_percent",
+            "battery_plugged_in"
+        ],
+        "uptime_metrics": [
+            "uptime_seconds"
+        ],
+        "process_metadata": [
+            "processes"
         ]
+    }
 
-        for kind, breached, message in checks:
-            alert = db.scalar(select(Alert).where(
-                Alert.device_id == device_id,
-                Alert.kind == kind,
-                Alert.active.is_(True),
-            ))
-            if breached and alert is None:
-                db.add(Alert(device_id=device_id, kind=kind, message=message))
-            elif breached:
-                alert.message = message
-            elif alert is not None:
-                alert.active = False
-                alert.resolved_at = now()
+    # Enforce permissions on the server too.
+    permitted_metrics = {}
 
-    return {"accepted": True}
+    for scope, fields in allowed.items():
+        if permissions.get(scope, False):
+            for field in fields:
+                if field in metrics:
+                    permitted_metrics[field] = metrics[field]
+
+    if not permitted_metrics:
+        raise HTTPException(
+            status_code=403,
+            detail="No authorized metrics supplied"
+        )
+
+    supabase.table("metrics").insert({
+        "device_id": device["id"],
+        "metrics": permitted_metrics
+    }).execute()
+
+    supabase.table("devices").update({
+        "last_seen": utc_now().isoformat()
+    }).eq("id", device["id"]).execute()
+
+    # Generate basic monitoring alerts.
+    if permitted_metrics.get("cpu_percent", 0) >= 90:
+        create_alert(
+            device["id"],
+            "high_cpu",
+            "CPU usage exceeded 90%",
+            "critical"
+        )
+
+    if permitted_metrics.get("ram_percent", 0) >= 90:
+        create_alert(
+            device["id"],
+            "high_memory",
+            "RAM usage exceeded 90%",
+            "warning"
+        )
+
+    return {
+        "success": True,
+        "message": "Metrics synchronized"
+    }
 
 
-@app.get("/devices")
-def devices(_=Depends(get_admin)):
-    with SessionLocal() as db:
-        all_devices = db.scalars(select(Device).order_by(Device.hostname)).all()
-        result = []
+def create_alert(device_id, alert_type, message, severity):
 
-        for d in all_devices:
-            metric = db.scalar(
-                select(Metric)
-                .where(Metric.device_id == d.id)
-                .order_by(desc(Metric.timestamp))
-                .limit(1)
+    supabase.table("alerts").insert({
+        "device_id": device_id,
+        "alert_type": alert_type,
+        "message": message,
+        "severity": severity
+    }).execute()
+
+
+# --------------------------------------------------
+# PERMISSION REQUESTS
+# --------------------------------------------------
+
+@app.get("/api/v1/agent/permission-requests")
+def get_permission_requests(device=Depends(get_device)):
+
+    result = (
+        supabase.table("permission_requests")
+        .select("*")
+        .eq("device_id", device["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+
+    return {
+        "requests": result.data
+    }
+
+
+@app.post("/api/v1/agent/permission-responses")
+def respond_to_permission(
+    data: PermissionResponse,
+    device=Depends(get_device)
+):
+
+    if data.decision not in ["approved", "denied"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid permission decision"
+        )
+
+    result = (
+        supabase.table("permission_requests")
+        .update({
+            "status": data.decision,
+            "responded_at": utc_now().isoformat()
+        })
+        .eq("id", data.request_id)
+        .eq("device_id", device["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Pending permission request not found"
+        )
+
+    # Apply approved permission to the device.
+    if data.decision == "approved":
+        current = device["permissions"].copy()
+
+        # Retrieve the approved scope from the request.
+        request = result.data[0]
+
+        scope = request["scope"]
+
+        if scope not in current:
+            raise HTTPException(
+                status_code=400,
+                detail="Unknown permission scope"
             )
-            last_seen = utc(d.last_seen)
-            online = bool(
-                d.is_active and last_seen
-                and (now() - last_seen).total_seconds() < 90
-            )
 
-            latest = None
-            if metric:
-                latest = {
-                    "timestamp": utc(metric.timestamp).isoformat(),
-                    "cpu_percent": metric.cpu_percent,
-                    "ram_percent": metric.ram_percent,
-                    "disk_percent": metric.disk_percent,
-                    "battery_percent": metric.battery_percent,
-                    "battery_plugged": metric.battery_plugged,
-                    "cpu_temp_c": metric.cpu_temp_c,
-                    "uptime_seconds": metric.uptime_seconds,
-                    "top_processes": metric.top_processes,
-                }
+        current[scope] = True
 
-            result.append({
-                "id": d.id,
-                "hostname": d.hostname,
-                "os_version": d.os_version,
-                "cpu_model": d.cpu_model,
-                "cpu_count": d.cpu_count,
-                "total_ram_mb": d.total_ram_mb,
-                "last_seen": last_seen.isoformat() if last_seen else None,
-                "online": online,
-                "is_active": d.is_active,
-                "latest": latest,
-            })
-        return result
+        supabase.table("devices").update({
+            "permissions": current
+        }).eq("id", device["id"]).execute()
+
+    return {
+        "message": f"Permission {data.decision}"
+    }
 
 
-@app.get("/devices/{device_id}/metrics")
-def metrics(device_id: str, limit: int = 60, _=Depends(get_admin)):
-    limit = max(1, min(limit, 500))
-    with SessionLocal() as db:
-        if db.get(Device, device_id) is None:
-            raise HTTPException(status_code=404, detail="Device not found")
+@app.post("/api/v1/admin/devices/{device_id}/permission-requests")
+def create_permission_request(
+    device_id: str,
+    data: PermissionRequestCreate,
+    admin=Depends(require_admin)
+):
 
-        rows = db.scalars(
-            select(Metric)
-            .where(Metric.device_id == device_id)
-            .order_by(desc(Metric.timestamp))
-            .limit(limit)
-        ).all()
+    valid_scopes = [
+        "system_metrics",
+        "disk_metrics",
+        "battery_metrics",
+        "uptime_metrics",
+        "process_metadata"
+    ]
 
-        return [{
-            "timestamp": utc(m.timestamp).isoformat(),
-            "cpu_percent": m.cpu_percent,
-            "ram_percent": m.ram_percent,
-            "disk_percent": m.disk_percent,
-            "cpu_temp_c": m.cpu_temp_c,
-            "battery_percent": m.battery_percent,
-            "top_processes": m.top_processes,
-        } for m in reversed(rows)]
+    if data.scope not in valid_scopes:
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown permission scope"
+        )
+
+    device = (
+        supabase.table("devices")
+        .select("id")
+        .eq("id", device_id)
+        .execute()
+    )
+
+    if not device.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not found"
+        )
+
+    result = supabase.table("permission_requests").insert({
+        "device_id": device_id,
+        "scope": data.scope,
+        "description": data.description or data.scope
+    }).execute()
+
+    return {
+        "message": "Permission request created",
+        "request": result.data[0]
+    }
 
 
-@app.get("/alerts")
-def alerts(_=Depends(get_admin)):
-    with SessionLocal() as db:
-        rows = db.execute(
-            select(Alert, Device.hostname)
-            .join(Device, Alert.device_id == Device.id)
-            .where(Alert.active.is_(True))
-            .order_by(desc(Alert.created_at))
-            .limit(100)
-        ).all()
+# --------------------------------------------------
+# ADMIN DASHBOARD DATA
+# --------------------------------------------------
 
-        return [{
-            "id": a.id,
-            "hostname": hostname,
-            "kind": a.kind,
-            "message": a.message,
-            "created_at": utc(a.created_at).isoformat(),
-        } for a, hostname in rows]
+@app.get("/api/v1/admin/devices")
+def list_devices(admin=Depends(require_admin)):
+
+    result = (
+        supabase.table("devices")
+        .select(
+            "id,hostname,os_name,agent_version,"
+            "monitoring_enabled,permissions,last_seen,created_at"
+        )
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    return {"devices": result.data}
 
 
-@app.post("/admin/devices/{device_id}/disable")
-def disable_device(device_id: str, _=Depends(get_admin)):
-    with SessionLocal.begin() as db:
-        device = db.get(Device, device_id)
-        if device is None:
-            raise HTTPException(status_code=404, detail="Device not found")
-        device.is_active = False
-    return {"disabled": True}
+@app.get("/api/v1/admin/metrics/{device_id}")
+def get_device_metrics(
+    device_id: str,
+    admin=Depends(require_admin)
+):
+
+    result = (
+        supabase.table("metrics")
+        .select("*")
+        .eq("device_id", device_id)
+        .order("recorded_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+
+    return {"metrics": result.data}
+
+
+@app.get("/api/v1/admin/alerts")
+def get_alerts(admin=Depends(require_admin)):
+
+    result = (
+        supabase.table("alerts")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+
+    return {"alerts": result.data}
