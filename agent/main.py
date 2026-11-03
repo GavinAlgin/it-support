@@ -116,7 +116,11 @@ class CloudMonitor(QMainWindow):
         )
 
         login_layout.addRow("Backend URL:", self.server_input)
-        login_layout.addRow("Username:", self.username_input)
+
+        # login_layout.addRow("Username:", self.username_input)
+        self.username_input.setPlaceholderText("employee@example.com")
+        login_layout.addRow("Email address:", self.username_input)
+
         login_layout.addRow("Password:", self.password_input)
         login_layout.addRow("Enrollment code:", self.enrollment_input)
 
@@ -200,7 +204,17 @@ class CloudMonitor(QMainWindow):
             **kwargs
         )
 
-        response.raise_for_status()
+        if not response.ok:
+            try:
+                detail = response.json().get(
+                    "detail", response.text
+                )
+            except ValueError:
+                detail = response.text
+
+            raise RuntimeError(
+                f"API error {response.status_code}: {detail}"
+            )
 
         if response.status_code == 204:
             return {}
