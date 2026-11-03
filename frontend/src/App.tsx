@@ -1,10 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity, AlertCircle, BatteryCharging, Bell, Check, ChevronDown,
   ChevronLeft, ChevronRight, CircleHelp, Clock3, Cpu, Database,
-  Ellipsis, HardDrive, LayoutDashboard, LoaderCircle, Menu, Monitor,
-  Plus, RefreshCw, Search, Settings, ShieldCheck, Ticket, Users,
+  Ellipsis, HardDrive, LayoutDashboard, Menu, Monitor,
+  RefreshCw, Search, Settings, ShieldCheck, Ticket, Users,
   Wifi, WifiOff, X, Zap, MemoryStick, Laptop,
 } from "lucide-react";
 import "./index.css";
@@ -33,6 +33,7 @@ type Device = {
   ip: string;
   serial: string;
   uptime: string;
+  processes?: ProcessInfo[];
 };
 
 type ProcessInfo = {
@@ -42,62 +43,6 @@ type ProcessInfo = {
   memory: number;
   category: string;
 };
-
-const initialDevices: Device[] = [
-  {
-    id: "PC-001", name: "Reception-PC", user: "Sarah Mokoena",
-    email: "sarah@example.com", organisation: "Techloom HQ",
-    os: "Windows 11 Pro", cpuModel: "Intel Core i5-12400",
-    cpu: 24, ram: 62, ramTotal: 16, disk: 48, diskTotal: 512,
-    battery: null, state: "Online", ticketCount: 1,
-    ticketState: "Open", lastSeen: "Just now", ip: "192.168.1.101",
-    serial: "TL-2025-001", uptime: "3d 5h 24m",
-  },
-  {
-    id: "PC-002", name: "Lab-PC-014", user: "David Khumalo",
-    email: "david@example.com", organisation: "Training Institute",
-    os: "Windows 10 Pro", cpuModel: "Intel Core i3-10100",
-    cpu: 0, ram: 0, ramTotal: 8, disk: 0, diskTotal: 256,
-    battery: null, state: "Offline", ticketCount: 2,
-    ticketState: "Open", lastSeen: "2 hours ago", ip: "192.168.1.114",
-    serial: "TL-2024-014", uptime: "Unknown",
-  },
-  {
-    id: "PC-003", name: "Finance-PC", user: "Mary Nkosi",
-    email: "mary@example.com", organisation: "Techloom HQ",
-    os: "Windows 11 Pro", cpuModel: "Intel Core i7-12700",
-    cpu: 78, ram: 84, ramTotal: 32, disk: 73, diskTotal: 1024,
-    battery: null, state: "Online", ticketCount: 0,
-    ticketState: "None", lastSeen: "Just now", ip: "192.168.1.103",
-    serial: "TL-2025-003", uptime: "6d 12h 08m",
-  },
-  {
-    id: "LT-004", name: "Director-Laptop", user: "Admin User",
-    email: "admin@example.com", organisation: "Techloom HQ",
-    os: "Windows 11 Pro", cpuModel: "Intel Core Ultra 5",
-    cpu: 12, ram: 38, ramTotal: 16, disk: 36, diskTotal: 512,
-    battery: 87, state: "Online", ticketCount: 1,
-    ticketState: "In progress", lastSeen: "Just now", ip: "192.168.1.104",
-    serial: "TL-2025-004", uptime: "1d 7h 14m",
-  },
-  {
-    id: "PC-005", name: "Workshop-PC", user: "Unassigned",
-    email: "—", organisation: "Mathosim Workshop",
-    os: "Windows 10 Pro", cpuModel: "Intel Core i5-8500",
-    cpu: 0, ram: 0, ramTotal: 8, disk: 0, diskTotal: 256,
-    battery: null, state: "Maintenance", ticketCount: 1,
-    ticketState: "In progress", lastSeen: "Yesterday", ip: "192.168.1.105",
-    serial: "TL-2023-005", uptime: "Unknown",
-  },
-];
-
-const demoProcesses: ProcessInfo[] = [
-  { name: "Google Chrome", pid: 4210, cpu: 18.4, memory: 1240, category: "Browser" },
-  { name: "Microsoft Teams", pid: 2784, cpu: 12.1, memory: 860, category: "Communication" },
-  { name: "Antimalware Service", pid: 1108, cpu: 8.2, memory: 420, category: "Security" },
-  { name: "Visual Studio Code", pid: 5160, cpu: 6.8, memory: 680, category: "Development" },
-  { name: "Windows Explorer", pid: 940, cpu: 2.1, memory: 180, category: "System" },
-];
 
 const fmt = (n: number) => `${n}%`;
 
@@ -157,141 +102,8 @@ function UsageBar({ value }: { value: number }) {
   );
 }
 
-function DeviceModal({
-  onClose, onAdd,
-}: {
-  onClose: () => void;
-  onAdd: (device: Device) => void;
-}) {
-  const [name, setName] = useState("");
-  const [user, setUser] = useState("");
-  const [email, setEmail] = useState("");
-  const [organisation, setOrganisation] = useState("");
-  const [os, setOs] = useState("Windows 11 Pro");
-  const [serial, setSerial] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (loading) return;
-    setError("");
-
-    setLoading(true);
-    // Demo only: replace this timeout with your registration API.
-    window.setTimeout(() => {
-      const device: Device = {
-        id: `PC-${String(Date.now()).slice(-5)}`,
-        name: name.trim(),
-        user: user.trim() || "Unassigned",
-        email: email.trim() || "—",
-        organisation: organisation.trim(),
-        os,
-        cpuModel: "Awaiting agent data",
-        cpu: 0, ram: 0, ramTotal: 0, disk: 0, diskTotal: 0,
-        battery: null, state: "Offline", ticketCount: 0,
-        ticketState: "None", lastSeen: "Not connected",
-        ip: "Pending agent", serial: serial.trim() || "Not provided",
-        uptime: "Unknown",
-      };
-      onAdd(device);
-    }, 1400);
-  }
-
-  return (
-    <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-zinc-950/40 p-4 backdrop-blur-sm"
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      onMouseDown={(e) => { if (e.target === e.currentTarget && !loading) onClose(); }}
-    >
-      <motion.div
-        initial={{ opacity: 0, y: 18, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 12, scale: 0.98 }}
-        transition={{ duration: 0.2 }}
-        className="my-auto w-full max-w-lg rounded-2xl border border-zinc-200 bg-white shadow-2xl"
-      >
-        <div className="flex items-start justify-between border-b border-zinc-100 p-6">
-          <div>
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
-              <Monitor size={21} />
-            </div>
-            <h2 className="text-lg font-semibold">Add a computer</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              Register a workstation or laptop in your inventory.
-            </p>
-          </div>
-          <button onClick={onClose} disabled={loading} aria-label="Close modal" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100">
-            <X size={19} />
-          </button>
-        </div>
-
-        <form onSubmit={submit} className="space-y-4 p-6">
-          <div>
-            <label className="mb-1.5 block text-sm font-medium">Computer name *</label>
-            <input required maxLength={80} value={name} onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Reception-PC" className="field" />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium">Assigned user</label>
-              <input value={user} onChange={(e) => setUser(e.target.value)}
-                placeholder="Full name" className="field" />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm font-medium">User email</label>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="user@company.co.za" className="field" />
-            </div>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm font-medium">Institute / business *</label>
-            <input required value={organisation} onChange={(e) => setOrganisation(e.target.value)}
-              placeholder="Organisation or department" className="field" />
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium">Operating system</label>
-              <select value={os} onChange={(e) => setOs(e.target.value)} className="field">
-                <option>Windows 11 Pro</option>
-                <option>Windows 10 Pro</option>
-                <option>Windows 11 Home</option>
-                <option>macOS</option>
-                <option>Ubuntu Linux</option>
-                <option>Other / Unknown</option>
-              </select>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm font-medium">Serial number</label>
-              <input value={serial} onChange={(e) => setSerial(e.target.value)}
-                placeholder="Manufacturer serial" className="field" />
-            </div>
-          </div>
-          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-          <div className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">
-            <strong>Monitoring setup:</strong> Adding a record registers the computer in this demo. Install and enrol a monitoring agent to collect actual hardware and process information.
-          </div>
-          <div className="flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end">
-            <button type="button" disabled={loading} onClick={onClose} className="btn-secondary">
-              Cancel
-            </button>
-            <button type="submit" disabled={loading} className="btn-primary min-w-36">
-              {loading ? <><LoaderCircle size={16} className="animate-spin" /> Registering...</> : <><Plus size={16} /> Add computer</>}
-            </button>
-          </div>
-          {loading && (
-            <div className="h-1 overflow-hidden rounded-full bg-blue-100">
-              <div className="animate-progress h-full rounded-full bg-blue-600" />
-            </div>
-          )}
-        </form>
-      </motion.div>
-    </motion.div>
-  );
-}
-
 function ComputerDetails({ device, onBack }: { device: Device; onBack: () => void }) {
-  const processes = device.state === "Online" ? demoProcesses : [];
+  const processes = device.state === "Online" ? (device.processes ?? []) : [];
 
   return (
     <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
@@ -327,7 +139,7 @@ function ComputerDetails({ device, onBack }: { device: Device; onBack: () => voi
             <h2 className="font-semibold">Task Manager</h2>
             <p className="mt-1 text-sm text-zinc-500">Applications and processes using computer resources</p>
           </div>
-          <span className="text-xs text-zinc-500">{processes.length} demo processes</span>
+          <span className="text-xs text-zinc-500">{processes.length} live processes</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[620px] text-left text-sm">
@@ -359,7 +171,7 @@ function ComputerDetails({ device, onBack }: { device: Device; onBack: () => voi
           </table>
         </div>
         <div className="border-t border-zinc-100 bg-zinc-50 px-5 py-3 text-xs text-zinc-500">
-          Demo process figures only. Production data must come from an enrolled endpoint agent.
+          Live process information reported by the connected desktop agent.
         </div>
       </section>
 
@@ -413,16 +225,154 @@ function ComputerDetails({ device, onBack }: { device: Device; onBack: () => voi
 }
 
 export default function App() {
-  const [devices, setDevices] = useState<Device[]>(initialDevices);
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [agentUrl, setAgentUrl] = useState(() => localStorage.getItem("cloudmonitor.agentUrl") || "http://127.0.0.1:8765");
+  const [agentToken, setAgentToken] = useState(() => localStorage.getItem("cloudmonitor.agentToken") || "");
+  const [agentStatus, setAgentStatus] = useState<"Disconnected" | "Connecting" | "Connected" | "Error">("Disconnected");
+  const [agentError, setAgentError] = useState("");
+  const [lastSync, setLastSync] = useState("");
+  const [agentDisplayName, setAgentDisplayName] = useState("");
+  const [agentAssignedUser, setAgentAssignedUser] = useState("");
+  const [agentUserEmail, setAgentUserEmail] = useState("");
+  const [agentOrganisation, setAgentOrganisation] = useState("");
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("All states");
   const [ticketFilter, setTicketFilter] = useState("All tickets");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [selected, setSelected] = useState<Device | null>(null);
-  const [showModal, setShowModal] = useState(false);
   const [notice, setNotice] = useState("");
   const [section, setSection] = useState("Computers");
   const [mobileNav, setMobileNav] = useState(false);
+
+  async function fetchAgentDevice() {
+    if (!agentToken.trim()) {
+      setAgentStatus("Disconnected");
+      return;
+    }
+    setAgentStatus("Connecting");
+    try {
+      const response = await fetch(`${agentUrl.replace(/\/$/, "")}/api/v1/device`, {
+        headers: { Authorization: `Bearer ${agentToken.trim()}` },
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error(response.status === 401 ? "Invalid agent token." : `Agent returned ${response.status}.`);
+      const raw = await response.json();
+      const ramTotal = Number(raw.ram_total_gb || 0);
+      const diskTotal = Number(raw.disk_total_gb || 0);
+      const device: Device = {
+        id: String(raw.id),
+        name: raw.display_name || raw.hostname || "Connected computer",
+        user: raw.assigned_user || "Unassigned",
+        email: raw.user_email || "—",
+        organisation: raw.organisation || "Unassigned organisation",
+        os: raw.os_name || "Unknown OS",
+        cpuModel: raw.cpu_model || "Unknown processor",
+        cpu: Number(raw.cpu_percent || 0),
+        ram: Number(raw.ram_percent || 0),
+        ramTotal,
+        disk: Number(raw.disk_percent || 0),
+        diskTotal,
+        battery: raw.battery_percent == null ? null : Number(raw.battery_percent),
+        state: raw.monitoring_enabled ? "Online" : "Maintenance",
+        ticketCount: 0,
+        ticketState: "None",
+        lastSeen: raw.last_seen ? new Date(raw.last_seen).toLocaleTimeString() : "Just now",
+        ip: raw.ip_address || "Unknown",
+        serial: raw.serial || "Not provided",
+        uptime: `${Math.floor(Number(raw.uptime_seconds || 0) / 86400)}d ${Math.floor((Number(raw.uptime_seconds || 0) % 86400) / 3600)}h`,
+        processes: Array.isArray(raw.processes) ? raw.processes.map((p: any) => ({
+          name: p.name || "Unknown",
+          pid: Number(p.pid || 0),
+          cpu: Number(p.cpu_percent || 0),
+          memory: Number(p.memory_mb || 0),
+          category: p.category || "Process",
+        })) : [],
+      };
+      setDevices(currentDevices => {
+        const previous = currentDevices.find(d => d.id === device.id);
+        const updated = {
+          ...device,
+          ticketCount: previous?.ticketCount ?? 0,
+          ticketState: previous?.ticketState ?? "None" as TicketState,
+        };
+        setSelected(current => current?.id === updated.id ? updated : current);
+        return [updated];
+      });
+      setAgentStatus("Connected");
+      setAgentError("");
+      setLastSync(new Date().toLocaleTimeString());
+    } catch (error) {
+      setAgentStatus("Error");
+      setAgentError(error instanceof Error ? error.message : "Could not connect to desktop agent.");
+      setDevices(current => current.map(d => ({ ...d, state: "Offline" })));
+    }
+  }
+
+  async function sendAgentCommand(command: "pause" | "resume" | "refresh") {
+    if (!agentToken.trim()) {
+      notify("Connect to the desktop agent first.");
+      return;
+    }
+    try {
+      const response = await fetch(`${agentUrl.replace(/\/$/, "")}/api/v1/commands`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${agentToken.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ command }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Command failed.");
+      await fetchAgentDevice();
+      notify(`Agent command "${command}" sent successfully.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not send command.");
+    }
+  }
+
+  async function sendAgentMetadata() {
+    if (!agentToken.trim()) {
+      notify("Connect to the desktop agent first.");
+      return;
+    }
+    try {
+      const response = await fetch(`${agentUrl.replace(/\/$/, "")}/api/v1/commands`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${agentToken.trim()}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          command: "metadata",
+          display_name: agentDisplayName,
+          assigned_user: agentAssignedUser,
+          user_email: agentUserEmail,
+          organisation: agentOrganisation,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Metadata update failed.");
+      await fetchAgentDevice();
+      notify("Computer details sent to the desktop agent.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not update agent metadata.");
+    }
+  }
+
+  useEffect(() => {
+    if (!agentToken.trim()) return;
+    localStorage.setItem("cloudmonitor.agentUrl", agentUrl);
+    localStorage.setItem("cloudmonitor.agentToken", agentToken);
+    let active = true;
+    const poll = async () => {
+      if (!active) return;
+      await fetchAgentDevice();
+    };
+    poll();
+    const timer = window.setInterval(poll, 3000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [agentUrl, agentToken]);
 
   const online = devices.filter(d => d.state === "Online").length;
   const offline = devices.filter(d => d.state === "Offline").length;
@@ -444,27 +394,13 @@ export default function App() {
     window.setTimeout(() => setNotice(""), 3000);
   }
 
-  function addDevice(device: Device) {
-    setDevices(prev => [device, ...prev]);
-    setShowModal(false);
-    setSection("Computers");
-    notify(`${device.name} added to inventory`);
-  }
-
-  function changeState(device: Device, state: DeviceState) {
-    setDevices(prev => prev.map(d => d.id === device.id ? { ...d, state } : d));
-    if (selected?.id === device.id) setSelected({ ...device, state });
-    setActiveMenu(null);
-    notify(`${device.name} marked ${state.toLowerCase()}`);
-  }
-
   function changeTicket(device: Device) {
     const count = device.ticketCount ? 0 : 1;
     const updated = { ...device, ticketCount: count, ticketState: count ? "Open" as const : "None" as const };
     setDevices(prev => prev.map(d => d.id === device.id ? updated : d));
     if (selected?.id === device.id) setSelected(updated);
     setActiveMenu(null);
-    notify(count ? "Demo ticket created" : "Demo tickets cleared");
+    notify(count ? "Ticket created locally" : "Tickets cleared locally");
   }
 
   const navItems = [
@@ -526,7 +462,7 @@ export default function App() {
             <span className="font-semibold sm:hidden">{selected ? selected.name : section}</span>
           </div>
           <div className="flex items-center gap-2 sm:gap-4">
-            <span className="hidden items-center gap-1.5 text-xs text-zinc-500 md:flex"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Demo environment</span>
+            <span className="hidden items-center gap-1.5 text-xs text-zinc-500 md:flex"><span className="h-2 w-2 rounded-full bg-emerald-500" /> {agentStatus === "Connected" ? "Agent connected" : "Agent disconnected"}</span>
             <button className="relative rounded-lg p-2 text-zinc-500 hover:bg-zinc-100" aria-label="Notifications" onClick={() => notify(`${offline} offline devices · ${openTickets} active tickets`)}>
               <Bell size={19} />
               {(offline > 0 || openTickets > 0) && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white" />}
@@ -547,8 +483,8 @@ export default function App() {
                   <p className="mt-2 text-sm text-zinc-500">Manage devices, monitor system health and track support issues.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => notify("Demo data refreshed")} className="btn-secondary"><RefreshCw size={15} /> Refresh</button>
-                  <button onClick={() => setShowModal(true)} className="btn-primary"><Plus size={16} /> Add computer</button>
+                  <button onClick={() => sendAgentCommand("refresh")} className="btn-secondary"><RefreshCw size={15} /> Refresh agent</button>
+                  <button onClick={() => setSection("Settings")} className="btn-primary"><Wifi size={16} /> Connect agent</button>
                 </div>
               </div>
 
@@ -564,7 +500,7 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <div>
                       <h2 className="font-semibold">Device health</h2>
-                      <p className="mt-1 text-xs text-zinc-500">Current status from the demo inventory</p>
+                      <p className="mt-1 text-xs text-zinc-500">Current status reported by the desktop agent</p>
                     </div>
                     <ShieldCheck className="text-zinc-400" size={20} />
                   </div>
@@ -665,14 +601,8 @@ export default function App() {
                               {activeMenu === d.id && (
                                 <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} className="absolute right-8 top-12 z-30 w-52 rounded-xl border border-zinc-200 bg-white p-1.5 text-left shadow-xl">
                                   <button onClick={() => { setSelected(d); setActiveMenu(null); }} className="menu-item"><Activity size={15} /> View details</button>
-                                  <button onClick={() => { changeTicket(d); }} className="menu-item"><Ticket size={15} /> {d.ticketCount ? "Clear demo tickets" : "Create demo ticket"}</button>
-                                  <div className="my-1 border-t border-zinc-100" />
-                                  <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Set demo state</p>
-                                  {(["Online", "Offline", "Maintenance"] as DeviceState[]).map(state => (
-                                    <button key={state} onClick={() => changeState(d, state)} className="menu-item">
-                                      <span className={`h-2 w-2 rounded-full ${state === "Online" ? "bg-emerald-500" : state === "Offline" ? "bg-red-500" : "bg-amber-500"}`} />Mark {state.toLowerCase()}
-                                    </button>
-                                  ))}
+                                  <button onClick={() => { changeTicket(d); }} className="menu-item"><Ticket size={15} /> {d.ticketCount ? "Clear tickets" : "Create ticket"}</button>
+
                                 </motion.div>
                               )}
                             </AnimatePresence>
@@ -694,7 +624,7 @@ export default function App() {
                   <span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" />Online · <span className="h-2 w-2 rounded-full bg-red-500" />Offline · <span className="h-2 w-2 rounded-full bg-amber-400" />Maintenance</span>
                 </div>
               </section>
-              <p className="text-center text-xs text-zinc-400">Techloom Service Desk · Prototype with simulated endpoint data</p>
+              <p className="text-center text-xs text-zinc-400">Techloom Service Desk · Direct desktop-agent connection</p>
             </>
           ) : section === "Tickets" ? (
             <section className="space-y-5">
@@ -711,24 +641,47 @@ export default function App() {
           ) : section === "Users" ? (
             <section className="space-y-5">
               <div><h1 className="text-2xl font-semibold">Assigned users</h1><p className="mt-2 text-sm text-zinc-500">People associated with the device inventory.</p></div>
-              <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white"><table className="w-full min-w-[600px] text-left text-sm"><thead className="bg-zinc-50 text-xs text-zinc-500"><tr><th className="px-5 py-3">User</th><th className="px-5 py-3">Email</th><th className="px-5 py-3">Organisation</th><th className="px-5 py-3">Computers</th></tr></thead><tbody className="divide-y divide-zinc-100">{[...new Map(devices.filter(d => d.user !== "Unassigned").map(d => [d.user, d])).values()].map(d => <tr key={d.user}><td className="px-5 py-4 font-medium">{d.user}</td><td className="px-5 py-4 text-zinc-500">{d.email}</td><td className="px-5 py-4">{d.organisation}</td><td className="px-5 py-4">{devices.filter(x => x.user === d.user).length}</td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white"><table className="w-full min-w-[600px] text-left text-sm"><thead className="bg-zinc-50 text-xs text-zinc-500"><tr><th className="px-5 py-3">User</th><th className="px-5 py-3">Email</th><th className="px-5 py-3">Organisation</th><th className="px-5 py-3">Computers</th></tr></thead><tbody className="divide-y divide-zinc-100">{[...new Map<string, Device>(devices.filter(d => d.user !== "Unassigned").map(d => [d.user, d] as [string, Device])).values()].map(d => <tr key={d.user}><td className="px-5 py-4 font-medium">{d.user}</td><td className="px-5 py-4 text-zinc-500">{d.email}</td><td className="px-5 py-4">{d.organisation}</td><td className="px-5 py-4">{devices.filter(x => x.user === d.user).length}</td></tr>)}</tbody></table></div>
             </section>
           ) : (
             <section className="max-w-2xl space-y-5">
-              <h1 className="text-2xl font-semibold">Settings</h1>
-              <div className="rounded-xl border border-zinc-200 bg-white p-5">
-                <h2 className="font-semibold">Monitoring configuration</h2>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">This frontend prototype does not connect to endpoint agents, a database, or a ticketing service yet. Configure the backend API, device heartbeat interval, authentication and alert thresholds before deploying.</p>
-                <div className="mt-4 flex items-center gap-2 text-sm text-amber-700"><AlertCircle size={17} /> Live monitoring is not configured.</div>
+              <div><h1 className="text-2xl font-semibold">Agent connection</h1><p className="mt-2 text-sm text-zinc-500">Connect directly to the CloudMonitor desktop application. No backend is used.</p></div>
+              <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-semibold">Local desktop agent</h2>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${agentStatus === "Connected" ? "bg-emerald-50 text-emerald-700" : agentStatus === "Error" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"}`}>{agentStatus}</span>
+                </div>
+                <div><label className="mb-1.5 block text-sm font-medium">Agent address</label><input value={agentUrl} onChange={e => setAgentUrl(e.target.value)} placeholder="http://127.0.0.1:8765" className="field" /></div>
+                <div><label className="mb-1.5 block text-sm font-medium">Agent API token</label><input value={agentToken} onChange={e => setAgentToken(e.target.value)} type="password" placeholder="Copy the token from CloudMonitor Desktop Agent" className="field" /></div>
+                {agentError && <p className="text-sm text-red-600">{agentError}</p>}
+                <p className="text-xs text-zinc-500">Copy the API token displayed in the desktop agent. The connection is checked automatically every 3 seconds.</p>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => { localStorage.setItem("cloudmonitor.agentUrl", agentUrl); localStorage.setItem("cloudmonitor.agentToken", agentToken); fetchAgentDevice(); }} className="btn-primary"><Wifi size={15} /> Connect / test</button>
+                  <button onClick={() => sendAgentCommand("refresh")} className="btn-secondary"><RefreshCw size={15} /> Request refresh</button>
+                </div>
+                <div className="border-t border-zinc-100 pt-4">
+                  <h3 className="text-sm font-semibold">Agent controls</h3>
+                  <p className="mt-1 text-xs text-zinc-500">Commands are sent directly to the running desktop agent.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button onClick={() => sendAgentCommand("pause")} className="btn-secondary">Pause monitoring</button>
+                    <button onClick={() => sendAgentCommand("resume")} className="btn-secondary">Resume monitoring</button>
+                  </div>
+                </div>
+                <p className="text-xs text-zinc-500">Last successful sync: {lastSync || "Not connected"}</p>
+                <div className="border-t border-zinc-100 pt-4 space-y-3">
+                  <h3 className="text-sm font-semibold">Send computer details to agent</h3>
+                  <div><label className="mb-1 block text-xs font-medium">Computer display name</label><input value={agentDisplayName} onChange={e => setAgentDisplayName(e.target.value)} className="field" placeholder="e.g. Reception-PC" /></div>
+                  <div><label className="mb-1 block text-xs font-medium">Assigned user</label><input value={agentAssignedUser} onChange={e => setAgentAssignedUser(e.target.value)} className="field" placeholder="Full name" /></div>
+                  <div><label className="mb-1 block text-xs font-medium">User email</label><input value={agentUserEmail} onChange={e => setAgentUserEmail(e.target.value)} className="field" placeholder="name@company.co.za" /></div>
+                  <div><label className="mb-1 block text-xs font-medium">Institute / business</label><input value={agentOrganisation} onChange={e => setAgentOrganisation(e.target.value)} className="field" placeholder="Organisation name" /></div>
+                  <button onClick={sendAgentMetadata} className="btn-secondary">Send details to agent</button>
+                </div>
               </div>
             </section>
           )}
         </main>
       </div>
 
-      <AnimatePresence>
-        {showModal && <DeviceModal onClose={() => setShowModal(false)} onAdd={addDevice} />}
-      </AnimatePresence>
       <AnimatePresence>
         {notice && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} role="status" className="fixed bottom-5 right-5 z-[70] flex max-w-[calc(100vw-40px)] items-center gap-3 rounded-xl bg-zinc-950 px-4 py-3 text-sm text-white shadow-xl">
