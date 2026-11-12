@@ -1,349 +1,3 @@
-# import os
-# import sys
-# import json
-# import time
-# import socket
-# import platform
-# import secrets
-# import uuid
-# import threading
-# from pathlib import Path
-# from datetime import datetime, timezone
-# from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-# from urllib.parse import urlparse
-
-# import psutil
-# from PySide6.QtCore import QTimer
-# from PySide6.QtWidgets import (
-#     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-#     QLabel, QPushButton, QMessageBox, QGroupBox, QFormLayout,
-#     QLineEdit
-# )
-
-# APP_NAME = "CloudMonitor"
-# VERSION = "1.3.0"
-# PORT = 8765
-# INTERVAL = 5
-# APP_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / APP_NAME
-# CONFIG_FILE = APP_DIR / "config.json"
-
-
-# def load_config():
-#     APP_DIR.mkdir(parents=True, exist_ok=True)
-#     try:
-#         return json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
-#     except (ValueError, OSError):
-#         return {}
-
-
-# def save_config(config):
-#     APP_DIR.mkdir(parents=True, exist_ok=True)
-#     tmp = CONFIG_FILE.with_suffix(".tmp")
-#     tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
-#     tmp.replace(CONFIG_FILE)
-
-
-# class AgentHTTPServer:
-#     """Local API used directly by the admin web application."""
-
-#     def __init__(self, window, port=PORT):
-#         self.window = window
-#         if not self.window.config.get("api_token"):
-#             self.window.config["api_token"] = secrets.token_urlsafe(32)
-#             save_config(self.window.config)
-#         self.token = self.window.config["api_token"]
-#         self.allowed_origins = {
-#             "http://localhost:5173", "http://127.0.0.1:5173",
-#             "http://localhost:4173", "http://127.0.0.1:4173",
-#         }
-#         outer = self
-
-#         class Handler(BaseHTTPRequestHandler):
-#             def send_json(self, status, data):
-#                 body = json.dumps(data).encode("utf-8")
-#                 self.send_response(status)
-#                 self.send_header("Content-Type", "application/json; charset=utf-8")
-#                 self.send_header("Content-Length", str(len(body)))
-#                 self.send_header("Cache-Control", "no-store")
-#                 origin = self.headers.get("Origin", "")
-#                 if origin in outer.allowed_origins:
-#                     self.send_header("Access-Control-Allow-Origin", origin)
-#                     self.send_header("Vary", "Origin")
-#                 self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-#                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-#                 self.end_headers()
-#                 self.wfile.write(body)
-
-#             def do_OPTIONS(self):
-#                 origin = self.headers.get("Origin", "")
-#                 if origin not in outer.allowed_origins:
-#                     self.send_json(403, {"detail": "Origin not allowed"})
-#                     return
-#                 self.send_response(204)
-#                 self.send_header("Access-Control-Allow-Origin", origin)
-#                 self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-#                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-#                 self.send_header("Vary", "Origin")
-#                 self.end_headers()
-
-#             def authorized(self):
-#                 origin = self.headers.get("Origin", "")
-#                 if origin and origin not in outer.allowed_origins:
-#                     self.send_json(403, {"detail": "Origin not allowed"})
-#                     return False
-#                 supplied = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-#                 if not secrets.compare_digest(supplied, outer.token):
-#                     self.send_json(401, {"detail": "Unauthorized. Check the agent token."})
-#                     return False
-#                 return True
-
-#             def do_GET(self):
-#                 path = urlparse(self.path).path
-#                 if path == "/health":
-#                     self.send_json(200, {"status": "online", "agent": APP_NAME, "version": VERSION})
-#                     return
-#                 if not self.authorized():
-#                     return
-#                 if path in ("/api/v1/device", "/api/v1/devices"):
-#                     device = outer.window.get_device_data()
-#                     if path.endswith("/devices"):
-#                         self.send_json(200, {"devices": [device]})
-#                     else:
-#                         self.send_json(200, device)
-#                     return
-#                 self.send_json(404, {"detail": "Endpoint not found"})
-
-#             def do_POST(self):
-#                 if not self.authorized():
-#                     return
-#                 path = urlparse(self.path).path
-#                 if path != "/api/v1/commands":
-#                     self.send_json(404, {"detail": "Endpoint not found"})
-#                     return
-#                 try:
-#                     length = int(self.headers.get("Content-Length", "0"))
-#                     payload = json.loads(self.rfile.read(length) or b"{}")
-#                 except (ValueError, json.JSONDecodeError):
-#                     self.send_json(400, {"detail": "Invalid JSON body"})
-#                     return
-#                 command = payload.get("command")
-#                 if command == "pause":
-#                     outer.window.set_monitoring(False)
-#                 elif command == "resume":
-#                     outer.window.set_monitoring(True)
-#                 elif command == "refresh":
-#                     outer.window.refresh_metrics()
-#                 elif command == "metadata":
-#                     allowed = ("display_name", "assigned_user", "user_email", "organisation")
-#                     for key in allowed:
-#                         if key in payload and isinstance(payload[key], str):
-#                             outer.window.config[key] = payload[key][:120]
-#                     save_config(outer.window.config)
-#                 else:
-#                     self.send_json(400, {"detail": "Unsupported command"})
-#                     return
-#                 self.send_json(200, {
-#                     "success": True, "command": command,
-#                     "device": outer.window.get_device_data()
-#                 })
-
-#             def log_message(self, fmt, *args):
-#                 return
-
-#         self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-#         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-#         self.thread.start()
-
-#     def stop(self):
-#         self.server.shutdown()
-#         self.server.server_close()
-
-
-# class CloudMonitor(QMainWindow):
-#     def __init__(self):
-#         super().__init__()
-#         self.setWindowTitle("CloudMonitor Desktop Agent")
-#         self.setMinimumSize(560, 560)
-#         self.config = load_config()
-#         self.config.setdefault("device_id", str(uuid.uuid4()))
-#         self.config.setdefault("display_name", socket.gethostname())
-#         save_config(self.config)
-#         self.monitoring_enabled = True
-#         self.latest_metrics = {}
-#         self.http_server = None
-#         self.build_ui()
-#         try:
-#             self.http_server = AgentHTTPServer(self)
-#             self.token_input.setText(self.config["api_token"])
-#             self.api_status.setText(f"Agent API running at http://127.0.0.1:{PORT}")
-#             self.refresh_metrics()
-#             self.timer = QTimer(self)
-#             self.timer.timeout.connect(self.refresh_metrics)
-#             self.timer.start(INTERVAL * 1000)
-#         except OSError as exc:
-#             QMessageBox.critical(self, "Agent API error", f"Could not start local API on port {PORT}: {exc}")
-#             self.api_status.setText(f"API failed: {exc}")
-
-#     def build_ui(self):
-#         container = QWidget()
-#         layout = QVBoxLayout(container)
-#         heading = QLabel("CloudMonitor")
-#         heading.setStyleSheet("font-size:26px;font-weight:bold;")
-#         layout.addWidget(heading)
-#         layout.addWidget(QLabel("Local desktop monitoring agent — no backend or account login required."))
-
-#         connection = QGroupBox("Frontend connection")
-#         form = QFormLayout(connection)
-#         self.device_id_label = QLabel(self.config.get("device_id", "Initialising"))
-#         self.hostname_label = QLabel(socket.gethostname())
-#         self.os_label = QLabel(f"{platform.system()} {platform.release()}")
-#         self.api_status = QLabel("Starting local API...")
-#         self.token_input = QLineEdit()
-#         self.token_input.setReadOnly(True)
-#         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
-#         reveal = QPushButton("Show / hide token")
-#         reveal.clicked.connect(lambda: self.token_input.setEchoMode(
-#             QLineEdit.EchoMode.Normal if self.token_input.echoMode() == QLineEdit.EchoMode.Password
-#             else QLineEdit.EchoMode.Password
-#         ))
-#         token_row = QWidget()
-#         token_layout = QHBoxLayout(token_row)
-#         token_layout.setContentsMargins(0, 0, 0, 0)
-#         token_layout.addWidget(self.token_input)
-#         token_layout.addWidget(reveal)
-#         form.addRow("Device ID:", self.device_id_label)
-#         form.addRow("Hostname:", self.hostname_label)
-#         form.addRow("Operating system:", self.os_label)
-#         form.addRow("API status:", self.api_status)
-#         form.addRow("Frontend API token:", token_row)
-#         layout.addWidget(connection)
-
-#         monitor = QGroupBox("Live monitoring")
-#         mlay = QVBoxLayout(monitor)
-#         self.status_label = QLabel("Starting...")
-#         self.cpu_label = QLabel("CPU: --")
-#         self.ram_label = QLabel("RAM: --")
-#         self.disk_label = QLabel("Disk: --")
-#         self.battery_label = QLabel("Battery: --")
-#         self.uptime_label = QLabel("Uptime: --")
-#         for widget in (self.status_label, self.cpu_label, self.ram_label,
-#                        self.disk_label, self.battery_label, self.uptime_label):
-#             mlay.addWidget(widget)
-#         buttons = QHBoxLayout()
-#         self.pause_button = QPushButton("Pause monitoring")
-#         self.pause_button.clicked.connect(lambda: self.set_monitoring(not self.monitoring_enabled))
-#         refresh = QPushButton("Refresh now")
-#         refresh.clicked.connect(self.refresh_metrics)
-#         buttons.addWidget(self.pause_button)
-#         buttons.addWidget(refresh)
-#         mlay.addLayout(buttons)
-#         layout.addWidget(monitor)
-#         self.setCentralWidget(container)
-
-#     def collect_metrics(self):
-#         cpu = psutil.cpu_percent(interval=0.2)
-#         mem = psutil.virtual_memory()
-#         root = os.environ.get("SystemDrive", "C:\\") if os.name == "nt" else "/"
-#         try:
-#             disk = psutil.disk_usage(root)
-#             disk_data = {
-#                 "disk_percent": disk.percent,
-#                 "disk_used_gb": round(disk.used / (1024 ** 3), 2),
-#                 "disk_total_gb": round(disk.total / (1024 ** 3), 2),
-#             }
-#         except OSError:
-#             disk_data = {"disk_percent": 0, "disk_used_gb": 0, "disk_total_gb": 0}
-#         battery = psutil.sensors_battery()
-#         processes = []
-#         for proc in psutil.process_iter(["pid", "name", "memory_info"]):
-#             try:
-#                 info = proc.info
-#                 processes.append({
-#                     "pid": info.get("pid"),
-#                     "name": info.get("name") or "Unknown",
-#                     "cpu_percent": round(proc.cpu_percent(None), 2),
-#                     "memory_mb": round((info["memory_info"].rss if info.get("memory_info") else 0) / 1048576, 2),
-#                     "category": "Process",
-#                 })
-#             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-#                 continue
-#         processes.sort(key=lambda item: item["cpu_percent"], reverse=True)
-#         return {
-#             "cpu_percent": round(cpu, 1),
-#             "cpu_model": platform.processor() or platform.machine() or "Unknown",
-#             "ram_percent": round(mem.percent, 1),
-#             "ram_used_gb": round(mem.used / (1024 ** 3), 2),
-#             "ram_total_gb": round(mem.total / (1024 ** 3), 2),
-#             **disk_data,
-#             "battery_percent": battery.percent if battery else None,
-#             "battery_plugged_in": battery.power_plugged if battery else None,
-#             "uptime_seconds": max(0, int(time.time() - psutil.boot_time())),
-#             "ip_address": self.get_ip_address(),
-#             "serial": "",
-#             "processes": processes[:100],
-#             "last_seen": datetime.now(timezone.utc).isoformat(),
-#         }
-
-#     def refresh_metrics(self):
-#         if not self.monitoring_enabled:
-#             return
-#         try:
-#             self.latest_metrics = self.collect_metrics()
-#             m = self.latest_metrics
-#             self.cpu_label.setText(f"CPU: {m['cpu_percent']}%")
-#             self.ram_label.setText(f"RAM: {m['ram_percent']}% ({m['ram_used_gb']}/{m['ram_total_gb']} GB)")
-#             self.disk_label.setText(f"Disk: {m['disk_percent']}% ({m['disk_used_gb']}/{m['disk_total_gb']} GB)")
-#             self.battery_label.setText(f"Battery: {m['battery_percent']}%" if m["battery_percent"] is not None else "Battery: Not available")
-#             self.uptime_label.setText(f"Uptime: {m['uptime_seconds'] // 3600} hours")
-#             self.status_label.setText("Monitoring active · telemetry available to frontend")
-#         except Exception as exc:
-#             self.status_label.setText(f"Metric collection failed: {exc}")
-
-#     def get_device_data(self):
-#         return {
-#             "id": self.config["device_id"],
-#             "hostname": socket.gethostname(),
-#             "display_name": self.config.get("display_name", socket.gethostname()),
-#             "assigned_user": self.config.get("assigned_user", "Unassigned"),
-#             "user_email": self.config.get("user_email", ""),
-#             "organisation": self.config.get("organisation", "Unassigned organisation"),
-#             "os_name": f"{platform.system()} {platform.release()}",
-#             "agent_version": VERSION,
-#             "monitoring_enabled": self.monitoring_enabled,
-#             **(self.latest_metrics or self.collect_metrics()),
-#         }
-
-#     def set_monitoring(self, enabled):
-#         self.monitoring_enabled = bool(enabled)
-#         if self.monitoring_enabled:
-#             self.refresh_metrics()
-#             self.timer.start(INTERVAL * 1000)
-#             self.pause_button.setText("Pause monitoring")
-#         else:
-#             self.timer.stop()
-#             self.status_label.setText("Monitoring paused by administrator")
-#             self.pause_button.setText("Resume monitoring")
-
-#     @staticmethod
-#     def get_ip_address():
-#         try:
-#             return socket.gethostbyname(socket.gethostname())
-#         except OSError:
-#             return ""
-
-#     def closeEvent(self, event):
-#         if hasattr(self, "timer"):
-#             self.timer.stop()
-#         if self.http_server:
-#             self.http_server.stop()
-#         event.accept()
-
-
-# if __name__ == "__main__":
-#     app = QApplication(sys.argv)
-#     window = CloudMonitor()
-#     window.show()
-#     sys.exit(app.exec())
 import os
 import sys
 import json
@@ -354,28 +8,47 @@ import secrets
 import uuid
 import threading
 import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 import psutil
-from PySide6.QtCore import QTimer
+
+from PySide6.QtCore import Qt, QTimer, Signal, QObject
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QMessageBox, QGroupBox, QFormLayout,
-    QLineEdit
+    QLabel, QPushButton, QMessageBox, QLineEdit, QTextEdit, QComboBox,
+    QStackedWidget, QFrame, QFormLayout, QProgressBar, QSpacerItem,
+    QSizePolicy, QScrollArea
 )
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 APP_NAME = "CloudMonitor"
-VERSION = "1.3.0"
+VERSION = "2.0.0"
 PORT = 8765
 INTERVAL = 5
+
 APP_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = APP_DIR / "config.json"
-BACKEND_URL = "http://localhost:8000"  # Update with your central control backend URL
+
+# Change this to the URL where your API is hosted.
+BACKEND_URL = os.getenv("CLOUDMONITOR_API", "http://localhost:8000").rstrip("/")
+
+# Expected backend routes (adjust these constants if your API uses other paths).
+LOGIN_ENDPOINT = "/api/v1/auth/login"
+TICKET_ENDPOINT = "/api/v1/tickets"
+ENROLL_ENDPOINT = "/api/v1/agents/request-connection"
+CLAIM_ENDPOINT = "/api/v1/agents/claim"
+TELEMETRY_ENDPOINT = "/api/v1/telemetry"
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def load_config():
     APP_DIR.mkdir(parents=True, exist_ok=True)
     try:
@@ -386,13 +59,55 @@ def load_config():
 
 def save_config(config):
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = CONFIG_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
-    tmp.replace(CONFIG_FILE)
+    temp_file = CONFIG_FILE.with_suffix(".tmp")
+    temp_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    temp_file.replace(CONFIG_FILE)
 
 
+def api_request(path, method="GET", payload=None, token=None, timeout=12):
+    """Send a JSON request to the central API and return its JSON response."""
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = urllib.request.Request(
+        f"{BACKEND_URL}{path}",
+        data=body,
+        headers=headers,
+        method=method
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")
+            parsed = json.loads(detail) if detail else {}
+            message = parsed.get("detail") or parsed.get("message") or detail
+        except Exception:
+            message = str(exc)
+        raise RuntimeError(f"API error ({exc.code}): {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not connect to {BACKEND_URL}: {exc.reason}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Signals for safe UI updates from worker threads
+# ---------------------------------------------------------------------------
+class AgentSignals(QObject):
+    telemetry_done = Signal(bool, str)
+
+
+# ---------------------------------------------------------------------------
+# Local agent API
+# ---------------------------------------------------------------------------
 class AgentHTTPServer:
-    """Local API used directly by the admin web application or local dashboard."""
+    """Local read-only device API for the admin dashboard."""
 
     def __init__(self, window, port=PORT):
         self.window = window
@@ -414,7 +129,7 @@ class AgentHTTPServer:
                     self.send_header("Access-Control-Allow-Origin", origin)
                     self.send_header("Vary", "Origin")
                 self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -426,7 +141,7 @@ class AgentHTTPServer:
                 self.send_response(204)
                 self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
                 self.send_header("Vary", "Origin")
                 self.end_headers()
 
@@ -434,23 +149,24 @@ class AgentHTTPServer:
                 supplied = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
                 token = outer.window.config.get("api_token", "")
                 if not token or not secrets.compare_digest(supplied, token):
-                    self.send_json(401, {"detail": "Unauthorized. Agent token missing or invalid."})
+                    self.send_json(401, {"detail": "Unauthorized"})
                     return False
                 return True
 
             def do_GET(self):
                 path = urlparse(self.path).path
                 if path == "/health":
-                    self.send_json(200, {"status": "online", "agent": APP_NAME, "version": VERSION})
+                    self.send_json(200, {
+                        "status": "online", "agent": APP_NAME, "version": VERSION
+                    })
                     return
                 if not self.authorized():
                     return
-                if path in ("/api/v1/device", "/api/v1/devices"):
-                    device = outer.window.get_device_data()
-                    if path.endswith("/devices"):
-                        self.send_json(200, {"devices": [device]})
-                    else:
-                        self.send_json(200, device)
+                if path == "/api/v1/device":
+                    self.send_json(200, outer.window.get_device_data())
+                    return
+                if path == "/api/v1/devices":
+                    self.send_json(200, {"devices": [outer.window.get_device_data()]})
                     return
                 self.send_json(404, {"detail": "Endpoint not found"})
 
@@ -466,18 +182,20 @@ class AgentHTTPServer:
         self.server.server_close()
 
 
+# ---------------------------------------------------------------------------
+# Main application
+# ---------------------------------------------------------------------------
 class CloudMonitor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CloudMonitor Desktop Agent")
-        self.setMinimumSize(560, 600)
-        
+        self.setWindowTitle("CloudMonitor | Desktop Agent")
+        self.setMinimumSize(900, 680)
+        self.resize(1080, 760)
+
         self.config = load_config()
         self.config.setdefault("device_id", str(uuid.uuid4()))
         self.config.setdefault("display_name", socket.gethostname())
-        self.config.setdefault("organisation", "Default Org")
-        self.config.setdefault("user_email", "user@example.com")
-        
+        self.config.setdefault("organisation", "")
         if not self.config.get("claim_secret"):
             self.config["claim_secret"] = secrets.token_urlsafe(32)
         save_config(self.config)
@@ -485,105 +203,498 @@ class CloudMonitor(QMainWindow):
         self.monitoring_enabled = True
         self.latest_metrics = {}
         self.http_server = None
-        
+
+        # User session token is deliberately kept in memory, not config.json.
+        self.user_token = None
+        self.current_user = {}
+
+        self.signals = AgentSignals()
+        self.signals.telemetry_done.connect(self.on_telemetry_done)
+
         self.build_ui()
-        self.check_enrollment_status()
+        self.show_login_page()
 
         try:
             self.http_server = AgentHTTPServer(self)
-            self.api_status_label.setText(f"Local Agent API running at http://127.0.0.1:{PORT}")
-            
-            self.timer = QTimer(self)
-            self.timer.timeout.connect(self.refresh_metrics)
-            self.timer.start(INTERVAL * 1000)
-            self.refresh_metrics()
+            self.api_status_label.setText(f"Local API active · 127.0.0.1:{PORT}")
         except OSError as exc:
-            QMessageBox.critical(self, "Agent API error", f"Could not start local API on port {PORT}: {exc}")
-            self.api_status_label.setText(f"API failed: {exc}")
+            self.api_status_label.setText(f"Local API unavailable: {exc}")
 
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_metrics)
+        self.timer.start(INTERVAL * 1000)
+        self.refresh_metrics()
+
+    # -----------------------------------------------------------------------
+    # UI construction
+    # -----------------------------------------------------------------------
     def build_ui(self):
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        
-        heading = QLabel("CloudMonitor Agent")
-        heading.setStyleSheet("font-size:24px;font-weight:bold;")
-        layout.addWidget(heading)
+        self.setStyleSheet("""
+            QWidget {
+                background: #F8FAFC;
+                color: #172033;
+                font-family: "Segoe UI";
+                font-size: 10pt;
+            }
+            QFrame#Sidebar { background: #101828; border: none; }
+            QLabel#Brand { color: white; font-size: 21pt; font-weight: 700; }
+            QLabel#BrandSub { color: #98A2B3; font-size: 9pt; }
+            QLabel#SidebarItem { color: #D0D5DD; padding: 11px 13px; }
+            QLabel#SidebarItemActive {
+                color: white; background: #344054; border-radius: 8px;
+                padding: 11px 13px; font-weight: 600;
+            }
+            QLabel#PageTitle { font-size: 23pt; font-weight: 700; color: #101828; }
+            QLabel#Muted { color: #667085; }
+            QLabel#CardTitle { font-size: 11pt; font-weight: 650; color: #344054; }
+            QFrame#Card {
+                background: white; border: 1px solid #EAECF0; border-radius: 12px;
+            }
+            QLineEdit, QTextEdit, QComboBox {
+                background: white; border: 1px solid #D0D5DD; border-radius: 7px;
+                padding: 10px 11px; min-height: 20px; selection-background-color: #155EEF;
+            }
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus { border: 1px solid #528BFF; }
+            QPushButton {
+                background: #155EEF; color: white; border: none; border-radius: 7px;
+                padding: 10px 16px; font-weight: 600; min-height: 20px;
+            }
+            QPushButton:hover { background: #004EEB; }
+            QPushButton:disabled { background: #A4BCFD; color: #F8FAFC; }
+            QPushButton#Secondary {
+                background: white; color: #344054; border: 1px solid #D0D5DD;
+            }
+            QPushButton#Secondary:hover { background: #F2F4F7; }
+            QPushButton#Link {
+                background: transparent; color: #155EEF; padding: 4px;
+            }
+            QProgressBar {
+                background: #EAECF0; border: none; border-radius: 4px;
+                height: 8px; text-align: center;
+            }
+            QProgressBar::chunk { background: #2E90FA; border-radius: 4px; }
+        """)
 
-        # Connection & Enrollment Group
-        enroll_group = QGroupBox("Backend Connection & Enrollment")
-        form = QFormLayout(enroll_group)
-        
-        self.device_id_label = QLabel(self.config.get("device_id"))
-        self.enrollment_status_label = QLabel("Checking status...")
-        
-        self.action_btn = QPushButton("Request Connection / Claim Token")
+        root = QWidget()
+        root_layout = QHBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(225)
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(18, 25, 18, 20)
+        side.setSpacing(12)
+
+        brand = QLabel("CloudMonitor")
+        brand.setObjectName("Brand")
+        brand_sub = QLabel("DESKTOP AGENT")
+        brand_sub.setObjectName("BrandSub")
+        side.addWidget(brand)
+        side.addWidget(brand_sub)
+        side.addSpacing(28)
+
+        self.nav_dashboard = QLabel("▦   Overview")
+        self.nav_dashboard.setObjectName("SidebarItem")
+        self.nav_ticket = QLabel("＋   Submit a ticket")
+        self.nav_ticket.setObjectName("SidebarItem")
+        side.addWidget(self.nav_dashboard)
+        side.addWidget(self.nav_ticket)
+        side.addStretch()
+
+        self.sidebar_user = QLabel("Not signed in")
+        self.sidebar_user.setStyleSheet("color:#D0D5DD; padding:8px 2px;")
+        side.addWidget(self.sidebar_user)
+        self.logout_button = QPushButton("Sign out")
+        self.logout_button.setObjectName("Secondary")
+        self.logout_button.clicked.connect(self.logout)
+        side.addWidget(self.logout_button)
+
+        self.pages = QStackedWidget()
+        self.login_page = self.create_login_page()
+        self.dashboard_page = self.create_dashboard_page()
+        self.ticket_page = self.create_ticket_page()
+
+        self.pages.addWidget(self.login_page)
+        self.pages.addWidget(self.dashboard_page)
+        self.pages.addWidget(self.ticket_page)
+
+        root_layout.addWidget(self.sidebar)
+        root_layout.addWidget(self.pages, 1)
+        self.setCentralWidget(root)
+
+        self.sidebar.hide()
+
+    def page_container(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(38, 30, 38, 30)
+        layout.setSpacing(20)
+        return page, layout
+
+    def card(self, title=None):
+        frame = QFrame()
+        frame.setObjectName("Card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        if title:
+            label = QLabel(title)
+            label.setObjectName("CardTitle")
+            layout.addWidget(label)
+        return frame, layout
+
+    def create_login_page(self):
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card, layout = self.card()
+        card.setMaximumWidth(440)
+
+        brand = QLabel("CloudMonitor")
+        brand.setStyleSheet("font-size:25pt;font-weight:700;color:#101828;")
+        subtitle = QLabel("Sign in to your organisation's desktop support workspace.")
+        subtitle.setObjectName("Muted")
+        subtitle.setWordWrap(True)
+
+        self.login_email = QLineEdit()
+        self.login_email.setPlaceholderText("name@company.com")
+        self.login_email.setClearButtonEnabled(True)
+        self.login_password = QLineEdit()
+        self.login_password.setPlaceholderText("Enter your password")
+        self.login_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.login_password.returnPressed.connect(self.login)
+
+        self.login_error = QLabel("")
+        self.login_error.setStyleSheet("color:#D92D20;")
+        self.login_error.setWordWrap(True)
+
+        self.login_button = QPushButton("Sign in")
+        self.login_button.clicked.connect(self.login)
+
+        layout.addWidget(brand)
+        layout.addWidget(subtitle)
+        layout.addSpacing(14)
+        layout.addWidget(QLabel("Email address"))
+        layout.addWidget(self.login_email)
+        layout.addWidget(QLabel("Password"))
+        layout.addWidget(self.login_password)
+        layout.addWidget(self.login_error)
+        layout.addWidget(self.login_button)
+        outer.addWidget(card)
+        return page
+
+    def create_dashboard_page(self):
+        page, layout = self.page_container()
+
+        header = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title = QLabel("Device overview")
+        title.setObjectName("PageTitle")
+        subtitle = QLabel("Your workstation's health and connection status.")
+        subtitle.setObjectName("Muted")
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+        header.addLayout(title_col)
+        header.addStretch()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("Secondary")
+        refresh_btn.clicked.connect(self.refresh_metrics)
+        header.addWidget(refresh_btn)
+        layout.addLayout(header)
+
+        status_card, status_layout = self.card("Agent connection")
+        self.enrollment_status_label = QLabel("Checking registration…")
+        self.api_status_label = QLabel("Starting local API…")
+        self.device_id_label = QLabel(self.config["device_id"])
+        self.device_id_label.setObjectName("Muted")
+        self.action_btn = QPushButton("Connect this device")
         self.action_btn.clicked.connect(self.handle_enrollment_action)
+        status_layout.addWidget(self.enrollment_status_label)
+        status_layout.addWidget(self.api_status_label)
+        status_layout.addWidget(QLabel("Device ID"))
+        status_layout.addWidget(self.device_id_label)
+        status_layout.addWidget(self.action_btn)
+        layout.addWidget(status_card)
 
-        form.addRow("Device ID:", self.device_id_label)
-        form.addRow("Enrollment Status:", self.enrollment_status_label)
-        form.addRow("", self.action_btn)
-        layout.addWidget(enroll_group)
+        metrics_row = QHBoxLayout()
+        self.cpu_value, self.cpu_bar = self.metric_card("CPU usage")
+        self.ram_value, self.ram_bar = self.metric_card("Memory usage")
+        self.disk_value, self.disk_bar = self.metric_card("Disk usage")
+        metrics_row.addWidget(self.cpu_value[0])
+        metrics_row.addWidget(self.ram_value[0])
+        metrics_row.addWidget(self.disk_value[0])
+        layout.addLayout(metrics_row)
 
-        # Local API / Frontend Connection Group
-        api_group = QGroupBox("Local Agent API")
-        api_form = QFormLayout(api_group)
-        self.api_status_label = QLabel("Initializing...")
-        self.token_input = QLineEdit()
-        self.token_input.setReadOnly(True)
-        self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        if self.config.get("api_token"):
-            self.token_input.setText(self.config["api_token"])
-
-        api_form.addRow("API Status:", self.api_status_label)
-        api_form.addRow("Agent Token:", self.token_input)
-        layout.addWidget(api_group)
-
-        # Live Monitoring Group
-        monitor = QGroupBox("Live Monitoring")
-        mlay = QVBoxLayout(monitor)
-        self.status_label = QLabel("Starting...")
-        self.cpu_label = QLabel("CPU: --")
-        self.ram_label = QLabel("RAM: --")
-        self.disk_label = QLabel("Disk: --")
-        self.uptime_label = QLabel("Uptime: --")
-        
-        for widget in (self.status_label, self.cpu_label, self.ram_label, self.disk_label, self.uptime_label):
-            mlay.addWidget(widget)
-            
-        buttons = QHBoxLayout()
+        monitor_card, monitor_layout = self.card("Monitoring")
+        self.status_label = QLabel("Waiting for first reading…")
+        self.uptime_label = QLabel("System uptime: —")
+        self.ip_label = QLabel("IP address: —")
         self.pause_button = QPushButton("Pause monitoring")
-        self.pause_button.clicked.connect(lambda: self.set_monitoring(not self.monitoring_enabled))
-        refresh = QPushButton("Refresh now")
-        refresh.clicked.connect(self.refresh_metrics)
-        buttons.addWidget(self.pause_button)
-        buttons.addWidget(refresh)
-        mlay.addLayout(buttons)
-        layout.addWidget(monitor)
+        self.pause_button.setObjectName("Secondary")
+        self.pause_button.clicked.connect(
+            lambda: self.set_monitoring(not self.monitoring_enabled)
+        )
+        monitor_layout.addWidget(self.status_label)
+        monitor_layout.addWidget(self.uptime_label)
+        monitor_layout.addWidget(self.ip_label)
+        monitor_layout.addWidget(self.pause_button)
+        layout.addWidget(monitor_card)
 
-        self.setCentralWidget(container)
+        layout.addStretch()
+        self.check_enrollment_status()
+        return page
 
-    def check_enrollment_status(self):
-        """Checks if the agent already has a permanent api_token."""
-        if self.config.get("api_token"):
-            self.enrollment_status_label.setText("Registered & Active 🟢")
-            self.action_btn.setText("Re-request Connection")
+    def metric_card(self, title):
+        card, layout = self.card(title)
+        value = QLabel("—%")
+        value.setStyleSheet("font-size:22pt;font-weight:700;color:#101828;")
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(False)
+        layout.addWidget(value)
+        layout.addWidget(bar)
+        return (card, value), bar
+
+    def create_ticket_page(self):
+        page, layout = self.page_container()
+
+        title = QLabel("Submit a support ticket")
+        title.setObjectName("PageTitle")
+        subtitle = QLabel("Describe the issue and our support team will follow up.")
+        subtitle.setObjectName("Muted")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        card, form = self.card("Ticket details")
+        form.addWidget(QLabel("Subject"))
+        self.ticket_subject = QLineEdit()
+        self.ticket_subject.setPlaceholderText("Briefly describe the issue")
+        form.addWidget(self.ticket_subject)
+
+        form.addWidget(QLabel("Category"))
+        self.ticket_category = QComboBox()
+        self.ticket_category.addItems([
+            "Hardware", "Software", "Network", "Account / Access",
+            "Performance", "Other"
+        ])
+        form.addWidget(self.ticket_category)
+
+        form.addWidget(QLabel("Priority"))
+        self.ticket_priority = QComboBox()
+        self.ticket_priority.addItems(["Low", "Normal", "High", "Urgent"])
+        self.ticket_priority.setCurrentText("Normal")
+        form.addWidget(self.ticket_priority)
+
+        form.addWidget(QLabel("Description"))
+        self.ticket_description = QTextEdit()
+        self.ticket_description.setPlaceholderText(
+            "Explain what happened, when it started, and any error message shown…"
+        )
+        self.ticket_description.setMinimumHeight(150)
+        form.addWidget(self.ticket_description)
+
+        self.ticket_feedback = QLabel("")
+        self.ticket_feedback.setWordWrap(True)
+        form.addWidget(self.ticket_feedback)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        clear_btn = QPushButton("Clear")
+        clear_btn.setObjectName("Secondary")
+        clear_btn.clicked.connect(self.clear_ticket_form)
+        self.ticket_submit_button = QPushButton("Submit ticket")
+        self.ticket_submit_button.clicked.connect(self.submit_ticket)
+        actions.addWidget(clear_btn)
+        actions.addWidget(self.ticket_submit_button)
+        form.addLayout(actions)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # -----------------------------------------------------------------------
+    # Navigation and authentication
+    # -----------------------------------------------------------------------
+    def show_login_page(self):
+        self.sidebar.hide()
+        self.pages.setCurrentWidget(self.login_page)
+        self.login_email.setFocus()
+
+    def show_app_page(self, page="dashboard"):
+        self.sidebar.show()
+        self.sidebar_user.setText(
+            self.current_user.get("name")
+            or self.current_user.get("email")
+            or "Signed in"
+        )
+        if page == "ticket":
+            self.pages.setCurrentWidget(self.ticket_page)
+            self.nav_ticket.setObjectName("SidebarItemActive")
+            self.nav_dashboard.setObjectName("SidebarItem")
         else:
-            self.enrollment_status_label.setText("Pending Connection / Not Claimed 🟡")
-            self.action_btn.setText("Request Connection to Backend")
+            self.pages.setCurrentWidget(self.dashboard_page)
+            self.nav_dashboard.setObjectName("SidebarItemActive")
+            self.nav_ticket.setObjectName("SidebarItem")
+        self.nav_dashboard.style().unpolish(self.nav_dashboard)
+        self.nav_dashboard.style().polish(self.nav_dashboard)
+        self.nav_ticket.style().unpolish(self.nav_ticket)
+        self.nav_ticket.style().polish(self.nav_ticket)
+
+    def login(self):
+        email = self.login_email.text().strip()
+        password = self.login_password.text()
+
+        if not email or not password:
+            self.login_error.setText("Enter your email address and password.")
+            return
+
+        self.login_button.setEnabled(False)
+        self.login_button.setText("Signing in…")
+        self.login_error.clear()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        try:
+            data = api_request(
+                LOGIN_ENDPOINT,
+                method="POST",
+                payload={"email": email, "password": password}
+            )
+            token = (
+                data.get("access_token")
+                or data.get("token")
+                or (data.get("data") or {}).get("access_token")
+            )
+            if not token:
+                raise RuntimeError(
+                    "The login response did not contain an access_token. "
+                    "Check the backend response format."
+                )
+
+            self.user_token = token
+            self.current_user = data.get("user") or data.get("data", {}).get("user") or {
+                "email": email
+            }
+            self.login_password.clear()
+            self.show_app_page("dashboard")
+        except Exception as exc:
+            self.login_error.setText(str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.login_button.setEnabled(True)
+            self.login_button.setText("Sign in")
+
+    def logout(self):
+        self.user_token = None
+        self.current_user = {}
+        self.login_password.clear()
+        self.sidebar_user.setText("Not signed in")
+        self.show_login_page()
+
+    def open_dashboard(self):
+        self.show_app_page("dashboard")
+
+    def open_ticket(self):
+        self.show_app_page("ticket")
+
+    # -----------------------------------------------------------------------
+    # Ticket submission
+    # -----------------------------------------------------------------------
+    def submit_ticket(self):
+        if not self.user_token:
+            QMessageBox.warning(self, "Sign in required", "Please sign in before submitting a ticket.")
+            self.show_login_page()
+            return
+
+        subject = self.ticket_subject.text().strip()
+        description = self.ticket_description.toPlainText().strip()
+
+        if not subject or not description:
+            self.ticket_feedback.setStyleSheet("color:#D92D20;")
+            self.ticket_feedback.setText("Subject and description are required.")
+            return
+
+        payload = {
+            "subject": subject,
+            "category": self.ticket_category.currentText(),
+            "priority": self.ticket_priority.currentText().lower(),
+            "description": description,
+            "device_id": self.config["device_id"],
+            "hostname": socket.gethostname(),
+            "device_name": self.config.get("display_name"),
+            "os_name": f"{platform.system()} {platform.release()}",
+            "agent_version": VERSION
+        }
+
+        self.ticket_submit_button.setEnabled(False)
+        self.ticket_submit_button.setText("Submitting…")
+        self.ticket_feedback.setStyleSheet("color:#667085;")
+        self.ticket_feedback.setText("Sending your ticket to the support team…")
+
+        try:
+            data = api_request(
+                TICKET_ENDPOINT,
+                method="POST",
+                payload=payload,
+                token=self.user_token
+            )
+            ticket = data.get("ticket") or data.get("data") or data
+            ticket_number = (
+                ticket.get("ticket_number")
+                or ticket.get("reference")
+                or ticket.get("id")
+            )
+            confirmation = "Ticket submitted successfully."
+            if ticket_number:
+                confirmation += f" Reference: {ticket_number}"
+            self.ticket_feedback.setStyleSheet("color:#027A48;font-weight:600;")
+            self.ticket_feedback.setText(confirmation)
+            self.clear_ticket_fields_only()
+        except Exception as exc:
+            self.ticket_feedback.setStyleSheet("color:#D92D20;")
+            self.ticket_feedback.setText(f"Ticket could not be submitted: {exc}")
+        finally:
+            self.ticket_submit_button.setEnabled(True)
+            self.ticket_submit_button.setText("Submit ticket")
+
+    def clear_ticket_fields_only(self):
+        self.ticket_subject.clear()
+        self.ticket_description.clear()
+        self.ticket_category.setCurrentIndex(0)
+        self.ticket_priority.setCurrentText("Normal")
+
+    def clear_ticket_form(self):
+        self.clear_ticket_fields_only()
+        self.ticket_feedback.clear()
+
+    # -----------------------------------------------------------------------
+    # Device enrollment
+    # -----------------------------------------------------------------------
+    def check_enrollment_status(self):
+        if not hasattr(self, "enrollment_status_label"):
+            return
+        if self.config.get("api_token"):
+            self.enrollment_status_label.setText("Device registered and authorised")
+            self.action_btn.setText("Re-check device registration")
+        elif self.config.get("request_id"):
+            self.enrollment_status_label.setText("Connection request pending admin approval")
+            self.action_btn.setText("Check approval")
+        else:
+            self.enrollment_status_label.setText("This device is not yet registered")
+            self.action_btn.setText("Connect this device")
 
     def handle_enrollment_action(self):
-        """Sends connection request or attempts to claim the token using request_id."""
         if self.config.get("api_token"):
-            # Already registered, option to reset/re-request
-            reply = QMessageBox.question(self, "Re-enroll", "Device is already registered. Submit a new connection request?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.No:
-                return
-            self.config.pop("api_token", None)
-            self.config.pop("request_id", None)
-            save_config(self.config)
+            QMessageBox.information(
+                self, "Device registered",
+                "This device already has an agent token. Contact an administrator if it needs to be re-enrolled."
+            )
+            return
 
         if not self.config.get("request_id"):
-            # Step 1: Send Connection Request
             payload = {
                 "device_id": self.config["device_id"],
                 "hostname": socket.gethostname(),
@@ -591,99 +702,109 @@ class CloudMonitor(QMainWindow):
                 "os_name": f"{platform.system()} {platform.release()}",
                 "agent_version": VERSION,
                 "organisation": self.config.get("organisation"),
-                "user_email": self.config.get("user_email"),
+                "user_email": self.current_user.get("email", ""),
                 "claim_secret": self.config["claim_secret"]
             }
             try:
-                req = urllib.request.Request(
-                    f"{BACKEND_URL}/api/v1/agents/request-connection",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
+                data = api_request(ENROLL_ENDPOINT, "POST", payload)
+                if not data.get("success"):
+                    raise RuntimeError(data.get("detail") or data.get("message") or "Request was not accepted.")
+                self.config["request_id"] = data.get("request_id")
+                save_config(self.config)
+                self.check_enrollment_status()
+                QMessageBox.information(
+                    self, "Request submitted",
+                    "The device connection request has been sent. An administrator must approve it."
                 )
-                with urllib.request.urlopen(req, timeout=5) as res:
-                    data = json.loads(res.read().decode("utf-8"))
-                    if data.get("success"):
-                        self.config["request_id"] = data.get("request_id")
-                        save_config(self.config)
-                        QMessageBox.information(self, "Success", "Connection request submitted! Waiting for admin approval in the dashboard.")
-                        self.enrollment_status_label.setText("Pending Admin Approval ⏳")
-                        self.action_btn.setText("Check Approval & Claim Token")
             except Exception as exc:
-                QMessageBox.critical(self, "Error", f"Failed to submit connection request: {exc}")
+                QMessageBox.critical(self, "Connection failed", str(exc))
         else:
-            # Step 2: Claim Token once approved by Admin
-            req_id = self.config["request_id"]
-            secret = self.config["claim_secret"]
-            url = f"{BACKEND_URL}/api/v1/agents/claim?request_id={req_id}&claim_secret={secret}"
+            query = urlencode({
+                "request_id": self.config["request_id"],
+                "claim_secret": self.config["claim_secret"]
+            })
             try:
-                req = urllib.request.Request(url, method="POST")
-                with urllib.request.urlopen(req, timeout=5) as res:
-                    data = json.loads(res.read().decode("utf-8"))
-                    if data.get("success"):
-                        self.config["api_token"] = data.get("api_token")
-                        save_config(self.config)
-                        self.token_input.setText(self.config["api_token"])
-                        QMessageBox.information(self, "Success", "Token successfully claimed! Agent is now fully authorized.")
-                        self.check_enrollment_status()
+                data = api_request(f"{CLAIM_ENDPOINT}?{query}", method="POST")
+                if not data.get("success") or not data.get("api_token"):
+                    raise RuntimeError(data.get("detail") or "Approval is still pending.")
+                self.config["api_token"] = data["api_token"]
+                save_config(self.config)
+                self.check_enrollment_status()
+                QMessageBox.information(self, "Device connected", "This device is now registered.")
             except Exception as exc:
-                QMessageBox.warning(self, "Pending", f"Could not claim token yet. Make sure an admin has approved the request. Details: {exc}")
+                QMessageBox.information(self, "Approval pending", str(exc))
 
+    # -----------------------------------------------------------------------
+    # Monitoring
+    # -----------------------------------------------------------------------
     def collect_metrics(self):
         cpu = psutil.cpu_percent(interval=0.2)
-        mem = psutil.virtual_memory()
+        memory = psutil.virtual_memory()
         root = os.environ.get("SystemDrive", "C:\\") if os.name == "nt" else "/"
         try:
-            disk = psutil.disk_usage(root)
-            disk_percent = disk.percent
+            disk_percent = psutil.disk_usage(root).percent
         except OSError:
             disk_percent = 0.0
 
+        battery = psutil.sensors_battery()
         return {
             "device_id": self.config["device_id"],
             "cpu_percent": round(cpu, 1),
-            "ram_percent": round(mem.percent, 1),
+            "ram_percent": round(memory.percent, 1),
             "disk_percent": round(disk_percent, 1),
+            "battery_percent": round(battery.percent, 1) if battery else None,
             "uptime_seconds": max(0, int(time.time() - psutil.boot_time())),
             "ip_address": self.get_ip_address(),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
     def transmit_telemetry(self, metrics):
-        """Securely transmits metrics to the central backend using the Bearer token."""
         token = self.config.get("api_token")
         if not token:
-            return  # Skip transmission if not yet claimed/authorized
-
+            return
         try:
-            payload = {"metrics": metrics}
-            req = urllib.request.Request(
-                f"{BACKEND_URL}/api/v1/telemetry",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {token}"
-                },
-                method="POST"
+            api_request(
+                TELEMETRY_ENDPOINT,
+                method="POST",
+                payload={"metrics": metrics},
+                token=token,
+                timeout=5
             )
-            urllib.request.urlopen(req, timeout=3)
-        except Exception:
-            pass  # Fail silently if offline or unapproved
+            self.signals.telemetry_done.emit(True, "Telemetry synced")
+        except Exception as exc:
+            self.signals.telemetry_done.emit(False, str(exc))
+
+    def on_telemetry_done(self, success, message):
+        if success:
+            self.status_label.setText("Monitoring active · device telemetry synced")
+        elif self.config.get("api_token"):
+            self.status_label.setText("Monitoring active · backend currently unreachable")
 
     def refresh_metrics(self):
         if not self.monitoring_enabled:
             return
         try:
             self.latest_metrics = self.collect_metrics()
-            m = self.latest_metrics
-            self.cpu_label.setText(f"CPU: {m['cpu_percent']}%")
-            self.ram_label.setText(f"RAM: {m['ram_percent']}%")
-            self.disk_label.setText(f"Disk: {m['disk_percent']}%")
-            self.uptime_label.setText(f"Uptime: {m['uptime_seconds'] // 3600} hours")
-            self.status_label.setText("Monitoring active · transmitting telemetry")
-
-            # Transmit in background thread
-            threading.Thread(target=self.transmit_telemetry, args=(self.latest_metrics,), daemon=True).start()
+            metrics = self.latest_metrics
+            self.cpu_value[1].setText(f"{metrics['cpu_percent']}%")
+            self.ram_value[1].setText(f"{metrics['ram_percent']}%")
+            self.disk_value[1].setText(f"{metrics['disk_percent']}%")
+            self.cpu_bar.setValue(int(metrics["cpu_percent"]))
+            self.ram_bar.setValue(int(metrics["ram_percent"]))
+            self.disk_bar.setValue(int(metrics["disk_percent"]))
+            self.uptime_label.setText(
+                f"System uptime: {metrics['uptime_seconds'] // 3600} hours"
+            )
+            self.ip_label.setText(f"IP address: {metrics['ip_address'] or 'Unavailable'}")
+            if self.config.get("api_token"):
+                self.status_label.setText("Monitoring active · syncing device telemetry")
+                threading.Thread(
+                    target=self.transmit_telemetry,
+                    args=(dict(metrics),),
+                    daemon=True
+                ).start()
+            else:
+                self.status_label.setText("Monitoring active · device not registered with backend")
         except Exception as exc:
             self.status_label.setText(f"Metric collection failed: {exc}")
 
@@ -700,7 +821,7 @@ class CloudMonitor(QMainWindow):
 
     def set_monitoring(self, enabled):
         self.monitoring_enabled = bool(enabled)
-        if self.monitoring_enabled:
+        if enabled:
             self.refresh_metrics()
             self.timer.start(INTERVAL * 1000)
             self.pause_button.setText("Pause monitoring")
@@ -712,7 +833,13 @@ class CloudMonitor(QMainWindow):
     @staticmethod
     def get_ip_address():
         try:
-            return socket.gethostbyname(socket.gethostname())
+            # UDP socket discovers the preferred local interface without sending data.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.connect(("192.0.2.1", 80))
+                return sock.getsockname()[0]
+            finally:
+                sock.close()
         except OSError:
             return ""
 
@@ -726,6 +853,7 @@ class CloudMonitor(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
     window = CloudMonitor()
     window.show()
     sys.exit(app.exec())
